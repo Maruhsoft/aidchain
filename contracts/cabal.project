@@ -1,0 +1,46 @@
+-- File: cabal.project
+-- Location: project root
+-- Description: Cabal workspace configuration for AidChain multi-package project
+-- Manages dependencies, indexing, and build constraints for all packages
+
+packages:
+  contracts/
+
+tests: True
+test-show-details: direct
+
+-- Plutus dependencies
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/plutus.git
+  tag: v1.9.0
+  subdir: plutus-core
+  subdir: plutus-ledger
+  subdir: plutus-ledger-api
+  subdir: plutus-tx
+  subdir: plutus-tx-plugin
+
+-- Index state for reproducible builds
+index-state: 2024-01-15T00:00:00Z
+
+-- GHC options for all packages
+package *
+  tests: True
+  test-show-details: direct
+
+-- Constraints for version consistency
+constraints:
+  plutus-ledger-api >= 1.9.0 && < 1.10,
+  plutus-tx >= 1.9.0 && < 1.10,
+  plutus-core >= 1.9.0 && < 1.10,
+  serialise >= 0.2.3.0 && < 0.3,
+  text >= 1.2.0 && < 2.1,
+  containers >= 0.6.0 && < 0.7,
+  bytestring >= 0.10.0 && < 0.12,
+  aeson >= 1.5.0 && < 2.3
+
+-- Allow newer versions if needed
+allow-newer: plutus-ledger-api:base
+
+-- Flags
+flags: +dev
