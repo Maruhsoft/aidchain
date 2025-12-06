@@ -1,0 +1,21 @@
+{
+  "name": "aidchain-backend",
+  "version": "1.0.0",
+  "description": "Backend API for AidChain DApp",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "@blockfrost/blockfrost-js": "^5.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "helmet": "^8.1.0",
+    "lucid-cardano": "^0.10.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

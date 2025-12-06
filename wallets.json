@@ -1,0 +1,45 @@
+{
+  "network": "preprod",
+  "testnet_magic": 1,
+  "generated_at": "2025-12-05T21:48:39Z",
+  "wallets": {
+    "admin": {
+      "role": "Platform Administrator",
+      "description": "Controls deployment, verification, and contract management",
+      "address": "[1;33mGenerating: admin (Platform Administrator)[0m",
+      "key_hash": "",
+      "payment_skey": "/c/Users/Admin/Documents/AIdChain/keys/",
+      "payment_vkey": "/c/Users/Admin/Documents/AIdChain/keys/admin-payment.vkey",
+      "stake_skey": "/c/Users/Admin/Documents/AIdChain/keys/admin-stake.skey",
+      "stake_vkey": "/c/Users/Admin/Documents/AIdChain/keys/admin-stake.vkey",
+      "backend_role": "admin"
+    },
+    "creator": {
+      "role": "Campaign Creator/Owner",
+      "description": "Creates campaigns, locks funds, initiates verification",
+      "address": "[1;33mGenerating: creator (Campaign Creator/Owner)[0m",
+      "key_hash": "",
+      "payment_skey": "/c/Users/Admin/Documents/AIdChain/keys/",
+      "payment_vkey": "/c/Users/Admin/Documents/AIdChain/keys/creator-payment.vkey",
+      "stake_skey": "/c/Users/Admin/Documents/AIdChain/keys/creator-stake.skey",
+      "stake_vkey": "/c/Users/Admin/Documents/AIdChain/keys/creator-stake.vkey",
+      "backend_role": "creator"
+    },
+    "contributor": {
+      "role": "Campaign Contributor",
+      "description": "Contributes funds to campaigns",
+      "address": "[1;33mGenerating: contributor (Campaign Contributor)[0m",
+      "key_hash": "",
+      "payment_skey": "/c/Users/Admin/Documents/AIdChain/keys/",
+      "payment_vkey": "/c/Users/Admin/Documents/AIdChain/keys/contributor-payment.vkey",
+      "stake_skey": "/c/Users/Admin/Documents/AIdChain/keys/contributor-stake.skey",
+      "stake_vkey": "/c/Users/Admin/Documents/AIdChain/keys/contributor-stake.vkey",
+      "backend_role": "contributor"
+    }
+  },
+  "usage": {
+    "admin": "Platform operations and contract management",
+    "creator": "Launch and manage fundraising campaigns",
+    "contributor": "Participate in campaigns"
+  }
+}

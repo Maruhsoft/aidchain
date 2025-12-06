@@ -1,0 +1,99 @@
+-- File: aidchain.cabal
+-- Location: contracts/
+-- Description: Cabal project configuration for AidChain smart contracts
+-- Defines dependencies, build configuration, and Plutus contract modules
+
+cabal-version:      3.0
+name:               aidchain
+version:            0.1.0.0
+license:            Apache-2.0
+author:             AidChain Team
+maintainer:         team@aidchain.io
+bug-reports:        https://github.com/aidchain/aidchain/issues
+description:        Smart contracts for AidChain fundraising and aid distribution platform
+category:           Blockchain
+build-type:         Simple
+
+common lang
+  default-language:   Haskell2010
+  default-extensions:
+    DataKinds
+    DefaultSignatures
+    DeriveAnyClass
+    DeriveGeneric
+    DerivingStrategies
+    DerivingVia
+    DuplicateRecordFields
+    ExplicitForAll
+    FlexibleContexts
+    FlexibleInstances
+    ImportQualifiedPost
+    MultiParamTypeClasses
+    NamedFieldPuns
+    NumericUnderscores
+    OverloadedStrings
+    PartialTypeSignatures
+    PatternSynonyms
+    RankNTypes
+    ScopedTypeVariables
+    StandaloneDeriving
+    TemplateHaskell
+    TupleSections
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+    UndecidableInstances
+    ViewPatterns
+
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wredundant-constraints
+    -O2
+
+library
+  import:           lang
+  exposed-modules:
+    AidChain
+    NftPolicy
+  build-depends:
+    base >=4.14 && <5,
+    aeson,
+    bytestring,
+    containers,
+    mtl,
+    plutus-core,
+    plutus-ledger,
+    plutus-ledger-api,
+    plutus-tx,
+    plutus-tx-plugin,
+    serialise,
+    text,
+    vector
+
+  hs-source-dirs:   .
+  ghc-options:      -fno-ignore-interface-pragmas -fno-omit-interface-pragmas -fobject-code -fPIC
+
+test-suite aidchain-tests
+  import:           lang
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  other-modules:
+    Spec.AidChain
+    Spec.NftPolicy
+  build-depends:
+    base >=4.14 && <5,
+    aidchain,
+    bytestring,
+    containers,
+    plutus-core,
+    plutus-ledger-api,
+    plutus-tx,
+    tasty,
+    tasty-hunit,
+    text
+
+  hs-source-dirs:   test
+  ghc-options:      -threaded -rtsopts -with-rtsopts=-N
