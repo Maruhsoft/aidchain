@@ -1,302 +1,207 @@
-<<<<<<< HEAD
 -- File: AidChain.hs
 -- Location: contracts/
--- Description: Main campaign validator implementing state machine logic (Fundraising -> Locked -> Verified -> Disbursed)
--- This contract handles campaign lifecycle, fund collection, verification, and disbursement
+-- Description: AidChain campaign validator - full state-machine validator
+--              Enforces: Fundraising -> Locked -> Verified -> Disbursed
+--              Includes verifier authorization, CID validation, and robust state checks.
 
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
 module AidChain where
 
+import Prelude (Show, String)
+import GHC.Generics (Generic)
+import Data.Aeson (ToJSON, FromJSON)
+
 import Plutus.V2.Ledger.Api
 import Plutus.V2.Ledger.Contexts
+import PlutusTx (BuiltinData, compile, applyCode, liftCode)
 import PlutusTx qualified
 import PlutusTx.Prelude
-import Prelude (Show, String)
-import Data.Aeson (ToJSON, FromJSON)
-import GHC.Generics (Generic)
 
--- Campaign State Machine
+-- Campaign State
 data CampaignState = Fundraising | Locked | Verified | Disbursed
-  deriving (Show, Generic, Eq, Ord)
-  deriving anyclass (ToJSON, FromJSON)
+  deriving (Show, Generic)
 
 PlutusTx.unstableMakeIsData ''CampaignState
 PlutusTx.makeLift ''CampaignState
 
--- Campaign Datum - Stores campaign metadata and state
+-- Datum stored at script UTxO
 data CampaignDatum = CampaignDatum
-  { campaignId :: BuiltinByteString
-  , campaignOwner :: PubKeyHash
-  , targetAmount :: Integer
-  , collectedAmount :: Integer
-  , state :: CampaignState
-  , deadline :: POSIXTime
-  , verificationRequired :: Bool
-  , beneficiaryAddress :: PubKeyHash
+  { cdCampaignId        :: BuiltinByteString
+  , cdOwner             :: PubKeyHash           -- NGO owner
+  , cdBeneficiary       :: PubKeyHash           -- Beneficiary address
+  , cdTargetAmount      :: Integer
+  , cdCollectedAmount   :: Integer
+  , cdState             :: CampaignState
+  , cdDeadline          :: POSIXTime
+  , cdVerificationCID   :: BuiltinByteString    -- ipfs://CID or empty until submitted
+  , cdVerifier          :: PubKeyHash           -- Authorized verifier (required to approve)
+  , cdNftMinted         :: Bool
   }
   deriving (Show, Generic)
 
 PlutusTx.unstableMakeIsData ''CampaignDatum
+PlutusTx.makeLift ''CampaignDatum
 
--- Campaign Redeemer Actions - Backend API actions mapped to on-chain operations
+-- Redeemer actions from backend
 data CampaignRedeemer
-  = Contribute Integer         -- POST /campaigns/{id}/contribute
-  | LockFunds                  -- POST /campaigns/{id}/lock
-  | VerifyFunds String         -- POST /campaigns/{id}/verify (verification proof)
-  | Disburse                   -- POST /campaigns/{id}/disburse
-  | Refund                     -- POST /campaigns/{id}/refund
+  = Contribute Integer                 -- Add contribution (off-chain tx must provide funds)
+  | LockFunds                          -- Lock campaign when target reached
+  | SubmitEvidence BuiltinByteString   -- Submit IPFS CID (e.g. "ipfs://Qm...")
+  | ApproveVerification                -- Verifier approves evidence (must be signed by cdVerifier)
+  | RejectVerification BuiltinByteString -- Verifier rejects with reason
+  | Disburse                           -- Owner disburses funds to beneficiary
+  | Refund                             -- Refund contributors after deadline when target not reached
   deriving (Show, Generic)
 
 PlutusTx.unstableMakeIsData ''CampaignRedeemer
+PlutusTx.makeLift ''CampaignRedeemer
 
--- Main Validator Logic - Implements backend validation rules
-{-# INLINABLE validateCampaign #-}
-validateCampaign :: CampaignDatum -> CampaignRedeemer -> ScriptContext -> Bool
-validateCampaign datum redeemer ctx = case redeemer of
-  
-  -- Contribute: Accepts contributions during fundraising period
-  Contribute amount ->
-    traceIfFalse "Invalid contribution amount" (amount > 0) &&
-    traceIfFalse "Campaign must be in Fundraising state" (state datum == Fundraising) &&
-    traceIfFalse "Deadline not exceeded" (txInfoValidRange (scriptContextTxInfo ctx) `contains` deadline datum) &&
-    traceIfFalse "Updated collection amount correct" (validateContributionUpdate datum amount ctx)
-  
-  -- LockFunds: Freezes fundraising when target reached
-  LockFunds ->
-    traceIfFalse "Campaign must be in Fundraising state" (state datum == Fundraising) &&
-    traceIfFalse "Target amount reached" (collectedAmount datum >= targetAmount datum) &&
-    traceIfFalse "Must be signed by campaign owner" (txSignedBy (scriptContextTxInfo ctx) (campaignOwner datum)) &&
-    traceIfFalse "Output state must be Locked" (validateStateTransition datum Locked ctx)
-  
-  -- VerifyFunds: Campaign owner submits verification proof
-  VerifyFunds verificationHash ->
-    traceIfFalse "Campaign must be in Locked state" (state datum == Locked) &&
-    traceIfFalse "Verification required for this campaign" (verificationRequired datum) &&
-    traceIfFalse "Must be signed by campaign owner" (txSignedBy (scriptContextTxInfo ctx) (campaignOwner datum)) &&
-    traceIfFalse "Invalid verification hash" (validateVerificationHash verificationHash) &&
-    traceIfFalse "Output state must be Verified" (validateStateTransition datum Verified ctx)
-  
-  -- Disburse: Transfers funds to beneficiary after verification
-  Disburse ->
-    traceIfFalse "Campaign must be in Verified state" (state datum == Verified) &&
-    traceIfFalse "Must be signed by campaign owner" (txSignedBy (scriptContextTxInfo ctx) (campaignOwner datum)) &&
-    traceIfFalse "Funds transferred to beneficiary" (validateFundTransfer datum ctx) &&
-    traceIfFalse "Output state must be Disbursed" (validateStateTransition datum Disbursed ctx)
-  
-  -- Refund: Returns funds to contributors if campaign fails
-  Refund ->
-    traceIfFalse "Campaign must be in Fundraising state" (state datum == Fundraising) &&
-    traceIfFalse "Deadline must be exceeded" (not $ txInfoValidRange (scriptContextTxInfo ctx) `contains` deadline datum) &&
-    traceIfFalse "Target not reached for refund" (collectedAmount datum < targetAmount datum)
-
--- Validates contribution amount updates
-{-# INLINABLE validateContributionUpdate #-}
-validateContributionUpdate :: CampaignDatum -> Integer -> ScriptContext -> Bool
-validateContributionUpdate datum amount ctx =
-  let txInfo = scriptContextTxInfo ctx
-      -- Check output datum has updated collection amount
-      outputs = getContinuingOutputs ctx
-  in case outputs of
-    [output] -> 
-      let outputDatum = case outputDatum (txOutData output) of
-            OutputDatum d -> d
-            _ -> error ()
-      in case PlutusTx.fromBuiltinData (getDatum outputDatum) of
-        Just (newDatum :: CampaignDatum) ->
-          collectedAmount newDatum == collectedAmount datum + amount
-        _ -> False
-    _ -> False
-
--- Validates state transitions
-{-# INLINABLE validateStateTransition #-}
-validateStateTransition :: CampaignDatum -> CampaignState -> ScriptContext -> Bool
-validateStateTransition datum newState ctx =
-  let outputs = getContinuingOutputs ctx
-  in case outputs of
-    [output] ->
-      case PlutusTx.fromBuiltinData (getDatum (txOutData output)) of
-        Just (newDatum :: CampaignDatum) ->
-          state newDatum == newState &&
-          campaignId newDatum == campaignId datum &&
-          campaignOwner newDatum == campaignOwner datum
-        _ -> False
-    _ -> False
-
--- Validates verification hash format
-{-# INLINABLE validateVerificationHash #-}
-validateVerificationHash :: String -> Bool
-validateVerificationHash hash = lengthOfByteString (stringToBuiltin hash) > 0
-
--- Validates fund transfer to beneficiary
-{-# INLINABLE validateFundTransfer #-}
-validateFundTransfer :: CampaignDatum -> ScriptContext -> Bool
-validateFundTransfer datum ctx =
-  let txInfo = scriptContextTxInfo ctx
-      outputs = txInfoOutputs txInfo
-      beneficiaryValue = collectedAmount datum
-  in any (\out -> valueContains (txOutValue out) (Ada.lovelaceValueOf beneficiaryValue)) outputs
-
--- Main validator entry point
-validator :: CampaignDatum -> CampaignRedeemer -> ScriptContext -> Bool
-validator = validateCampaign
-
+-- Helper: convert Haskell String to BuiltinByteString (off-chain only)
 {-# INLINABLE stringToBuiltin #-}
 stringToBuiltin :: String -> BuiltinByteString
-=======
--- File: AidChain.hs
--- Location: contracts/
--- Description: Main campaign validator implementing state machine logic (Fundraising -> Locked -> Verified -> Disbursed)
--- This contract handles campaign lifecycle, fund collection, verification, and disbursement
+stringToBuiltin s = encodeUtf8 (toBuiltin s)
 
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies #-}
+-- Helper: check prefix "ipfs://"
+{-# INLINABLE hasIpfsPrefix #-}
+hasIpfsPrefix :: BuiltinByteString -> Bool
+hasIpfsPrefix bs =
+  let pref = encodeUtf8 (toBuiltin ("ipfs://" :: String))
+  in sliceByteString 0 (lengthOfByteString pref) bs == pref
 
-module AidChain where
+-- Get the continuing output datum (script output that continues the contract)
+{-# INLINABLE getContinuingDatum #-}
+getContinuingDatum :: ScriptContext -> Maybe CampaignDatum
+getContinuingDatum ctx =
+    case getContinuingOutputs ctx of
+      [o] -> case txOutDatum o of
+               OutputDatum _ -> case txOutDatum o of
+                 OutputDatum d -> PlutusTx.fromBuiltinData d
+                 _ -> Nothing
+               _ -> Nothing
+      _ -> Nothing
 
-import Plutus.V2.Ledger.Api
-import Plutus.V2.Ledger.Contexts
-import PlutusTx qualified
-import PlutusTx.Prelude
-import Prelude (Show, String)
-import Data.Aeson (ToJSON, FromJSON)
-import GHC.Generics (Generic)
+-- Validate that continuing datum exists and produced state equals expected
+{-# INLINABLE checkStateTransition #-}
+checkStateTransition :: CampaignDatum -> CampaignState -> ScriptContext -> Bool
+checkStateTransition old expected ctx =
+  case getContinuingDatum ctx of
+    Just new -> cdState new == expected &&
+                cdCampaignId new == cdCampaignId old &&
+                cdOwner new == cdOwner old &&
+                cdTargetAmount new == cdTargetAmount old
+    _ -> False
 
--- Campaign State Machine
-data CampaignState = Fundraising | Locked | Verified | Disbursed
-  deriving (Show, Generic, Eq, Ord)
-  deriving anyclass (ToJSON, FromJSON)
+-- Validate contribution: ensure continuing datum collectedAmount increased by amount
+{-# INLINABLE validateContribution #-}
+validateContribution :: CampaignDatum -> Integer -> ScriptContext -> Bool
+validateContribution old amt ctx =
+  amt > 0 &&
+  cdState old == Fundraising &&
+  contains (txInfoValidRange $ scriptContextTxInfo ctx) (to $ cdDeadline old) == False `traceIfFalse` "deadline passed" -- ensure not past deadline (off-chain range handling)
+  &&
+  case getContinuingDatum ctx of
+    Just new -> cdCollectedAmount new == cdCollectedAmount old + amt &&
+                cdState new == Fundraising
+    _ -> False
 
-PlutusTx.unstableMakeIsData ''CampaignState
-PlutusTx.makeLift ''CampaignState
+-- Validate submit evidence (CID format)
+{-# INLINABLE validateSubmitEvidence #-}
+validateSubmitEvidence :: CampaignDatum -> BuiltinByteString -> ScriptContext -> Bool
+validateSubmitEvidence old cid _ctx =
+  cdState old == Locked &&
+  hasIpfsPrefix cid &&
+  lengthOfByteString cid > 8 -- basic length check
 
--- Campaign Datum - Stores campaign metadata and state
-data CampaignDatum = CampaignDatum
-  { campaignId :: BuiltinByteString
-  , campaignOwner :: PubKeyHash
-  , targetAmount :: Integer
-  , collectedAmount :: Integer
-  , state :: CampaignState
-  , deadline :: POSIXTime
-  , verificationRequired :: Bool
-  , beneficiaryAddress :: PubKeyHash
-  }
-  deriving (Show, Generic)
+-- Validate approval: must be signed by verifier and move to Verified
+{-# INLINABLE validateApproval #-}
+validateApproval :: CampaignDatum -> ScriptContext -> Bool
+validateApproval old ctx =
+  cdState old == Locked &&
+  txSignedBy (scriptContextTxInfo ctx) (cdVerifier old) &&
+  checkStateTransition old Verified ctx
 
-PlutusTx.unstableMakeIsData ''CampaignDatum
+-- Validate disburse: must be signed by owner, state Verified, and funds transferred to beneficiary
+{-# INLINABLE validateDisburse #-}
+validateDisburse :: CampaignDatum -> ScriptContext -> Bool
+validateDisburse old ctx =
+  cdState old == Verified &&
+  txSignedBy (scriptContextTxInfo ctx) (cdOwner old) &&
+  checkStateTransition old Disbursed ctx &&
+  -- ensure beneficiary receives at least collectedAmount in outputs
+  let info = scriptContextTxInfo ctx
+      outputs = txInfoOutputs info
+      target = cdCollectedAmount old
+      receives = any (\o -> txOutAddress o == pubKeyHashAddress (cdBeneficiary old) && valueOf (txOutValue o) adaSymbol adaToken >= target) outputs
+  in receives
 
--- Campaign Redeemer Actions - Backend API actions mapped to on-chain operations
-data CampaignRedeemer
-  = Contribute Integer         -- POST /campaigns/{id}/contribute
-  | LockFunds                  -- POST /campaigns/{id}/lock
-  | VerifyFunds String         -- POST /campaigns/{id}/verify (verification proof)
-  | Disburse                   -- POST /campaigns/{id}/disburse
-  | Refund                     -- POST /campaigns/{id}/refund
-  deriving (Show, Generic)
+-- Validate refund: only when deadline passed and target not reached
+{-# INLINABLE validateRefund #-}
+validateRefund :: CampaignDatum -> ScriptContext -> Bool
+validateRefund old ctx =
+  cdState old == Fundraising &&
+  cdCollectedAmount old < cdTargetAmount old &&
+  -- deadline passed
+  contains (txInfoValidRange $ scriptContextTxInfo ctx) (from $ cdDeadline old) &&
+  True
 
-PlutusTx.unstableMakeIsData ''CampaignRedeemer
-
--- Main Validator Logic - Implements backend validation rules
+-- Main validator
 {-# INLINABLE validateCampaign #-}
 validateCampaign :: CampaignDatum -> CampaignRedeemer -> ScriptContext -> Bool
-validateCampaign datum redeemer ctx = case redeemer of
-  
-  -- Contribute: Accepts contributions during fundraising period
-  Contribute amount ->
-    traceIfFalse "Invalid contribution amount" (amount > 0) &&
-    traceIfFalse "Campaign must be in Fundraising state" (state datum == Fundraising) &&
-    traceIfFalse "Deadline not exceeded" (txInfoValidRange (scriptContextTxInfo ctx) `contains` deadline datum) &&
-    traceIfFalse "Updated collection amount correct" (validateContributionUpdate datum amount ctx)
-  
-  -- LockFunds: Freezes fundraising when target reached
-  LockFunds ->
-    traceIfFalse "Campaign must be in Fundraising state" (state datum == Fundraising) &&
-    traceIfFalse "Target amount reached" (collectedAmount datum >= targetAmount datum) &&
-    traceIfFalse "Must be signed by campaign owner" (txSignedBy (scriptContextTxInfo ctx) (campaignOwner datum)) &&
-    traceIfFalse "Output state must be Locked" (validateStateTransition datum Locked ctx)
-  
-  -- VerifyFunds: Campaign owner submits verification proof
-  VerifyFunds verificationHash ->
-    traceIfFalse "Campaign must be in Locked state" (state datum == Locked) &&
-    traceIfFalse "Verification required for this campaign" (verificationRequired datum) &&
-    traceIfFalse "Must be signed by campaign owner" (txSignedBy (scriptContextTxInfo ctx) (campaignOwner datum)) &&
-    traceIfFalse "Invalid verification hash" (validateVerificationHash verificationHash) &&
-    traceIfFalse "Output state must be Verified" (validateStateTransition datum Verified ctx)
-  
-  -- Disburse: Transfers funds to beneficiary after verification
-  Disburse ->
-    traceIfFalse "Campaign must be in Verified state" (state datum == Verified) &&
-    traceIfFalse "Must be signed by campaign owner" (txSignedBy (scriptContextTxInfo ctx) (campaignOwner datum)) &&
-    traceIfFalse "Funds transferred to beneficiary" (validateFundTransfer datum ctx) &&
-    traceIfFalse "Output state must be Disbursed" (validateStateTransition datum Disbursed ctx)
-  
-  -- Refund: Returns funds to contributors if campaign fails
-  Refund ->
-    traceIfFalse "Campaign must be in Fundraising state" (state datum == Fundraising) &&
-    traceIfFalse "Deadline must be exceeded" (not $ txInfoValidRange (scriptContextTxInfo ctx) `contains` deadline datum) &&
-    traceIfFalse "Target not reached for refund" (collectedAmount datum < targetAmount datum)
-
--- Validates contribution amount updates
-{-# INLINABLE validateContributionUpdate #-}
-validateContributionUpdate :: CampaignDatum -> Integer -> ScriptContext -> Bool
-validateContributionUpdate datum amount ctx =
-  let txInfo = scriptContextTxInfo ctx
-      -- Check output datum has updated collection amount
-      outputs = getContinuingOutputs ctx
-  in case outputs of
-    [output] -> 
-      let outputDatum = case outputDatum (txOutData output) of
-            OutputDatum d -> d
-            _ -> error ()
-      in case PlutusTx.fromBuiltinData (getDatum outputDatum) of
-        Just (newDatum :: CampaignDatum) ->
-          collectedAmount newDatum == collectedAmount datum + amount
+validateCampaign datum redeemer ctx =
+  case redeemer of
+    Contribute amt -> validateContribution datum amt ctx
+    LockFunds ->
+      cdState datum == Fundraising &&
+      cdCollectedAmount datum >= cdTargetAmount datum &&
+      txSignedBy (scriptContextTxInfo ctx) (cdOwner datum) &&
+      checkStateTransition datum Locked ctx
+    SubmitEvidence cid ->
+      validateSubmitEvidence datum cid ctx &&
+      -- ensure continuing datum contains CID
+      case getContinuingDatum ctx of
+        Just new -> cdVerificationCID new == cid && cdState new == Locked
         _ -> False
-    _ -> False
-
--- Validates state transitions
-{-# INLINABLE validateStateTransition #-}
-validateStateTransition :: CampaignDatum -> CampaignState -> ScriptContext -> Bool
-validateStateTransition datum newState ctx =
-  let outputs = getContinuingOutputs ctx
-  in case outputs of
-    [output] ->
-      case PlutusTx.fromBuiltinData (getDatum (txOutData output)) of
-        Just (newDatum :: CampaignDatum) ->
-          state newDatum == newState &&
-          campaignId newDatum == campaignId datum &&
-          campaignOwner newDatum == campaignOwner datum
+    ApproveVerification ->
+      validateApproval datum ctx
+    RejectVerification _reason ->
+      -- verifier signs rejection, state remains Locked or returns to Fundraising if needed
+      cdState datum == Locked &&
+      txSignedBy (scriptContextTxInfo ctx) (cdVerifier datum) &&
+      -- continuing datum should remain Locked (owner will resubmit)
+      case getContinuingDatum ctx of
+        Just new -> cdState new == Locked
         _ -> False
-    _ -> False
+    Disburse -> validateDisburse datum ctx
+    Refund -> validateRefund datum ctx
 
--- Validates verification hash format
-{-# INLINABLE validateVerificationHash #-}
-validateVerificationHash :: String -> Bool
-validateVerificationHash hash = lengthOfByteString (stringToBuiltin hash) > 0
+-- Boilerplate to compile validator
+{-# INLINABLE mkValidator #-}
+mkValidator :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkValidator d r ctx = case PlutusTx.fromBuiltinData d of
+  Just datum -> case PlutusTx.fromBuiltinData r of
+    Just redeemer -> if validateCampaign datum redeemer (unsafeFromBuiltinData ctx)
+                      then ()
+                      else traceError "validation failed"
+    _ -> traceError "invalid redeemer"
+  _ -> traceError "invalid datum"
 
--- Validates fund transfer to beneficiary
-{-# INLINABLE validateFundTransfer #-}
-validateFundTransfer :: CampaignDatum -> ScriptContext -> Bool
-validateFundTransfer datum ctx =
-  let txInfo = scriptContextTxInfo ctx
-      outputs = txInfoOutputs txInfo
-      beneficiaryValue = collectedAmount datum
-  in any (\out -> valueContains (txOutValue out) (Ada.lovelaceValueOf beneficiaryValue)) outputs
+validatorInstance :: Validator
+validatorInstance = Validator $ mkValidatorScript $$(PlutusTx.compile [|| mkValidator ||])
 
--- Main validator entry point
-validator :: CampaignDatum -> CampaignRedeemer -> ScriptContext -> Bool
-validator = validateCampaign
+validatorHash :: ValidatorHash
+validatorHash = validatorHash validatorInstance
 
-{-# INLINABLE stringToBuiltin #-}
-stringToBuiltin :: String -> BuiltinByteString
->>>>>>> c7b249bdec2e744ded5a75199881325425c8cd00
-stringToBuiltin s = PlutusTx.encodeUtf8 (PlutusTx.pack s)
+validatorAddress :: Address
+validatorAddress = scriptHashAddress validatorHash
+
+PlutusTx.makeIsDataIndexed ''CampaignRedeemer [('Contribute,0),('LockFunds,1),('SubmitEvidence,2),('ApproveVerification,3),('RejectVerification,4),('Disburse,5),('Refund,6)]
+PlutusTx.makeIsDataIndexed ''CampaignDatum [('CampaignDatum,0)]

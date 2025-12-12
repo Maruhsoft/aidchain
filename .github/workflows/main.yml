@@ -210,6 +210,11 @@ jobs:
           ADMIN_KEY: 'test-admin-key'
           CREATOR_KEY: 'test-creator-key'
           CONTRIBUTOR_KEY: 'test-contributor-key'
+          VERIFIER_KEY: 'test-verifier-key'
+          ASSERT_ONCHAIN: 'false'
+          ONCHAIN_HELPER: './scripts/onchain-helper.sh'
+          USE_CARDANO_CLI: 'false'
+          RUN_CARDANO_CLI: 'false'
       
       - name: 📊 Upload E2E test results
         uses: actions/upload-artifact@v3

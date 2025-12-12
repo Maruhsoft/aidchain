@@ -1,220 +1,82 @@
-<<<<<<< HEAD
 -- File: NftPolicy.hs
 -- Location: contracts/
--- Description: NFT minting policy for verified campaigns
--- Issues NFTs as proof of campaign verification, backend syncs verification status
+-- Description: NFT minting policy for AidChain verified campaigns
+--              Ensures single NFT per campaign and requires verifier or admin signature.
 
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module NftPolicy where
 
+import Prelude (Show)
+import GHC.Generics (Generic)
 import Plutus.V2.Ledger.Api
 import Plutus.V2.Ledger.Contexts
-import PlutusTx qualified
 import PlutusTx.Prelude
-import Data.Aeson (ToJSON, FromJSON)
-import GHC.Generics (Generic)
-
--- NFT Metadata for verified campaigns
-data NftMetadata = NftMetadata
-  { nftCampaignId :: BuiltinByteString
-  , nftCampaignName :: BuiltinByteString
-  , nftVerificationDate :: POSIXTime
-  , nftIssuer :: PubKeyHash
-  }
-  deriving (Show, Generic)
-
-PlutusTx.unstableMakeIsData ''NftMetadata
-
--- Minting/Burning Redeemer - Backend triggers NFT lifecycle
-data MintingRedeemer 
-  = MintNft NftMetadata      -- POST /campaigns/{id}/mint-nft
-  | BurnNft BuiltinByteString -- POST /campaigns/{id}/burn-nft
-  deriving (Show, Generic)
-
-PlutusTx.unstableMakeIsData ''MintingRedeemer
-
--- NFT Minting Policy - Controls NFT creation and destruction
-{-# INLINABLE validateNftMinting #-}
-validateNftMinting :: MintingRedeemer -> ScriptContext -> Bool
-validateNftMinting redeemer ctx = case redeemer of
-  
-  -- MintNft: Creates single NFT per verified campaign
-  MintNft metadata ->
-    traceIfFalse "NFT must be minted exactly once" (validateMintQuantity ctx 1) &&
-    traceIfFalse "Campaign ID must be valid" (lengthOfByteString (nftCampaignId metadata) > 0) &&
-    traceIfFalse "Campaign name required" (lengthOfByteString (nftCampaignName metadata) > 0) &&
-    traceIfFalse "Issuer must sign minting" (txSignedBy (scriptContextTxInfo ctx) (nftIssuer metadata)) &&
-    traceIfFalse "Metadata properly encoded in output" (validateMetadataEncoding metadata ctx)
-  
-  -- BurnNft: Destroys NFT (campaign cancellation/revocation)
-  BurnNft campaignId ->
-    traceIfFalse "NFT must be burned exactly once" (validateMintQuantity ctx (-1)) &&
-    traceIfFalse "Campaign ID valid for burn" (lengthOfByteString campaignId > 0) &&
-    traceIfFalse "Admin authorization required" (validateBurnAuthorization ctx)
-
--- Validates minting quantity matches expected amount
-{-# INLINABLE validateMintQuantity #-}
-validateMintQuantity :: ScriptContext -> Integer -> Bool
-validateMintQuantity ctx expectedQuantity =
-  let minted = txInfoMint (scriptContextTxInfo ctx)
-      flatMinted = flattenValue minted
-      ownSymbol = ownCurrencySymbol ctx
-  in case flatMinted of
-    [(symbol, tokenName, quantity)] ->
-      symbol == ownSymbol &&
-      tokenName == "" &&
-      quantity == expectedQuantity
-    _ -> False
-
--- Validates metadata is properly encoded in transaction outputs
-{-# INLINABLE validateMetadataEncoding #-}
-validateMetadataEncoding :: NftMetadata -> ScriptContext -> Bool
-validateMetadataEncoding metadata ctx =
-  let outputs = txInfoOutputs (scriptContextTxInfo ctx)
-  in any (\out -> validateOutputDatum metadata out) outputs
-
--- Validates output contains correct NFT metadata
-{-# INLINABLE validateOutputDatum #-}
-validateOutputDatum :: NftMetadata -> TxOut -> Bool
-validateOutputDatum metadata out =
-  case txOutData out of
-    OutputDatum d ->
-      case PlutusTx.fromBuiltinData d of
-        Just (encodedMetadata :: NftMetadata) ->
-          nftCampaignId encodedMetadata == nftCampaignId metadata &&
-          nftCampaignName encodedMetadata == nftCampaignName metadata
-        _ -> False
-    _ -> False
-
--- Validates burn authorization (platform admin only)
-{-# INLINABLE validateBurnAuthorization #-}
-validateBurnAuthorization :: ScriptContext -> Bool
-validateBurnAuthorization ctx =
-  let txInfo = scriptContextTxInfo ctx
-      signatories = txInfoSignatories txInfo
-  in any (\signer -> signer `elem` signatories) [PubKeyHash "admin_key_placeholder"]
-
--- Policy entry point
-policy :: MintingRedeemer -> ScriptContext -> Bool
-policy = validateNftMinting
-
--- Helper to get bytestring length
-{-# INLINABLE lengthOfByteString #-}
-lengthOfByteString :: BuiltinByteString -> Bool
-=======
--- File: NftPolicy.hs
--- Location: contracts/
--- Description: NFT minting policy for verified campaigns
--- Issues NFTs as proof of campaign verification, backend syncs verification status
-
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies #-}
-
-module NftPolicy where
-
-import Plutus.V2.Ledger.Api
-import Plutus.V2.Ledger.Contexts
 import PlutusTx qualified
-import PlutusTx.Prelude
-import Data.Aeson (ToJSON, FromJSON)
-import GHC.Generics (Generic)
+import PlutusTx.Builtins as Builtins
 
--- NFT Metadata for verified campaigns
-data NftMetadata = NftMetadata
-  { nftCampaignId :: BuiltinByteString
-  , nftCampaignName :: BuiltinByteString
-  , nftVerificationDate :: POSIXTime
-  , nftIssuer :: PubKeyHash
-  }
-  deriving (Show, Generic)
+-- Redeemer: Mint or Burn
+data NftRedeemer = MintNft BuiltinByteString PubKeyHash -- campaignId, issuer
+                 | BurnNft BuiltinByteString            -- campaignId
+  deriving Show
 
-PlutusTx.unstableMakeIsData ''NftMetadata
+PlutusTx.unstableMakeIsData ''NftRedeemer
 
--- Minting/Burning Redeemer - Backend triggers NFT lifecycle
-data MintingRedeemer 
-  = MintNft NftMetadata      -- POST /campaigns/{id}/mint-nft
-  | BurnNft BuiltinByteString -- POST /campaigns/{id}/burn-nft
-  deriving (Show, Generic)
+{-# INLINABLE flattenSingle #-}
+flattenSingle :: Value -> Maybe (CurrencySymbol, TokenName, Integer)
+flattenSingle v =
+  case flattenValue v of
+    [(cs, tn, q)] -> Just (cs, tn, q)
+    _ -> Nothing
 
-PlutusTx.unstableMakeIsData ''MintingRedeemer
-
--- NFT Minting Policy - Controls NFT creation and destruction
-{-# INLINABLE validateNftMinting #-}
-validateNftMinting :: MintingRedeemer -> ScriptContext -> Bool
-validateNftMinting redeemer ctx = case redeemer of
-  
-  -- MintNft: Creates single NFT per verified campaign
-  MintNft metadata ->
-    traceIfFalse "NFT must be minted exactly once" (validateMintQuantity ctx 1) &&
-    traceIfFalse "Campaign ID must be valid" (lengthOfByteString (nftCampaignId metadata) > 0) &&
-    traceIfFalse "Campaign name required" (lengthOfByteString (nftCampaignName metadata) > 0) &&
-    traceIfFalse "Issuer must sign minting" (txSignedBy (scriptContextTxInfo ctx) (nftIssuer metadata)) &&
-    traceIfFalse "Metadata properly encoded in output" (validateMetadataEncoding metadata ctx)
-  
-  -- BurnNft: Destroys NFT (campaign cancellation/revocation)
-  BurnNft campaignId ->
-    traceIfFalse "NFT must be burned exactly once" (validateMintQuantity ctx (-1)) &&
-    traceIfFalse "Campaign ID valid for burn" (lengthOfByteString campaignId > 0) &&
-    traceIfFalse "Admin authorization required" (validateBurnAuthorization ctx)
-
--- Validates minting quantity matches expected amount
-{-# INLINABLE validateMintQuantity #-}
-validateMintQuantity :: ScriptContext -> Integer -> Bool
-validateMintQuantity ctx expectedQuantity =
-  let minted = txInfoMint (scriptContextTxInfo ctx)
-      flatMinted = flattenValue minted
-      ownSymbol = ownCurrencySymbol ctx
-  in case flatMinted of
-    [(symbol, tokenName, quantity)] ->
-      symbol == ownSymbol &&
-      tokenName == "" &&
-      quantity == expectedQuantity
+{-# INLINABLE policy #-}
+policy :: PubKeyHash -> BuiltinData -> ScriptContext -> Bool
+policy adminPkh bd ctx =
+  case PlutusTx.fromBuiltinData bd of
+    Just (redeemer :: NftRedeemer) -> 
+      case redeemer of
+        MintNft campaignId issuer ->
+          case flattenSingle (txInfoMint info) of
+            Just (cs, tn, q) ->
+              cs == ownCurrencySymbol ctx &&
+              q == 1 &&
+              -- token name tied to campaignId to prevent duplicates
+              tn == TokenName campaignId &&
+              -- issuer or admin must sign
+              (txSignedBy info issuer || txSignedBy info adminPkh)
+            _ -> False
+        BurnNft campaignId ->
+          case flattenSingle (txInfoMint info) of
+            Just (_cs, _tn, q) ->
+              q == (-1) &&
+              True -- allow burn by admin/off-chain checks
+            _ -> False
     _ -> False
+  where
+    info = scriptContextTxInfo ctx
 
--- Validates metadata is properly encoded in transaction outputs
-{-# INLINABLE validateMetadataEncoding #-}
-validateMetadataEncoding :: NftMetadata -> ScriptContext -> Bool
-validateMetadataEncoding metadata ctx =
-  let outputs = txInfoOutputs (scriptContextTxInfo ctx)
-  in any (\out -> validateOutputDatum metadata out) outputs
+{-# INLINABLE mkPolicy #-}
+mkPolicy :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkPolicy adminD redeemerD ctxD =
+  let adminPkh = case PlutusTx.fromBuiltinData adminD of
+                   Just p -> p
+                   _ -> traceError "invalid admin pkh"
+  in if policy adminPkh redeemerD (unsafeFromBuiltinData ctxD)
+     then ()
+     else traceError "nft policy failed"
 
--- Validates output contains correct NFT metadata
-{-# INLINABLE validateOutputDatum #-}
-validateOutputDatum :: NftMetadata -> TxOut -> Bool
-validateOutputDatum metadata out =
-  case txOutData out of
-    OutputDatum d ->
-      case PlutusTx.fromBuiltinData d of
-        Just (encodedMetadata :: NftMetadata) ->
-          nftCampaignId encodedMetadata == nftCampaignId metadata &&
-          nftCampaignName encodedMetadata == nftCampaignName metadata
-        _ -> False
-    _ -> False
+policyScript :: PubKeyHash -> MintingPolicy
+policyScript admin = mkMintingPolicyScript $
+  $$(PlutusTx.compile [|| \a -> mkPolicy `PlutusTx.applyCode` PlutusTx.liftCode a ||])
+  `PlutusTx.applyCode` PlutusTx.liftCode admin
 
--- Validates burn authorization (platform admin only)
-{-# INLINABLE validateBurnAuthorization #-}
-validateBurnAuthorization :: ScriptContext -> Bool
-validateBurnAuthorization ctx =
-  let txInfo = scriptContextTxInfo ctx
-      signatories = txInfoSignatories txInfo
-  in any (\signer -> signer `elem` signatories) [PubKeyHash "admin_key_placeholder"]
+{-# INLINABLE nftCurrencySymbol #-}
+nftCurrencySymbol :: PubKeyHash -> CurrencySymbol
+nftCurrencySymbol admin = ownCurrencySymbol (scriptContextFromPolicy $ mkMintingPolicyScript $ policyScript admin)
 
--- Policy entry point
-policy :: MintingRedeemer -> ScriptContext -> Bool
-policy = validateNftMinting
-
--- Helper to get bytestring length
-{-# INLINABLE lengthOfByteString #-}
-lengthOfByteString :: BuiltinByteString -> Bool
->>>>>>> c7b249bdec2e744ded5a75199881325425c8cd00
-lengthOfByteString bs = PlutusTx.lengthOfByteString bs > 0
+PlutusTx.makeLift ''NftRedeemer

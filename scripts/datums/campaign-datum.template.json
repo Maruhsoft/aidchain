@@ -1,0 +1,9 @@
+{
+  "constructor": 0,
+  "fields": [
+    { "string": "<CAMPAIGN_ID>" },
+    { "string": "<CREATOR_PUBKEYHASH>" },
+    { "int": 0 },
+    { "int": 0 }
+  ]
+}

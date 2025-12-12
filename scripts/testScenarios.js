@@ -7,24 +7,28 @@
  * It is useful for verifying logic without using the UI.
  */
 
-const fetch = require('node-fetch'); // Ensure node-fetch is installed or use native fetch in Node 18+
+import fetch from 'node-fetch'; // Ensure node-fetch is installed or use native fetch in Node 18+
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
 
 const API_URL = process.env.API_URL || 'http://localhost:3001/api';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'test-admin-key';
 const CREATOR_KEY = process.env.CREATOR_KEY || 'test-creator-key';
 const CONTRIBUTOR_KEY = process.env.CONTRIBUTOR_KEY || 'test-contributor-key';
+const VERIFIER_KEY = process.env.VERIFIER_KEY || 'test-verifier-key'; // added verifier key
 
 // Test configuration
 const TEST_CONFIG = {
   campaignTarget: 5000, // lovelace
   contributionAmount: 1000, // lovelace
-  maxRetries: 3,
+  maxRetries: 5,
   retryDelay: 2000, // milliseconds
 };
 
 /**
  * Test Scenario 1: Full Campaign Lifecycle
- * Flow: Create → Contribute → Lock → Verify → Disburse → Confirm
+ * Flow: Create → Contribute → Lock → Submit Evidence → Approve (verifier) → Mint NFT (admin) → Disburse → Confirm
  */
 async function testFullCampaignLifecycle() {
   console.log('\n╔════════════════════════════════════════════════════╗');
@@ -32,84 +36,124 @@ async function testFullCampaignLifecycle() {
   console.log('╚════════════════════════════════════════════════════╝\n');
 
   try {
-    // Step 1: Create Campaign (Backend: POST /campaigns)
-    console.log('1️⃣  Creating campaign...');
+    // Step 1: Create Campaign (include verifier assignment)
+    console.log('1️⃣  Creating campaign (assigning verifier)...');
     const createRes = await post('/campaigns', {
       title: `Test Campaign ${Date.now()}`,
       description: 'E2E test for campaign fundraising and verification',
       targetAmount: TEST_CONFIG.campaignTarget,
-      category: 'Education',
-      location: 'Test City',
-      beneficiariesCount: 150,
-      imageUrl: 'https://example.com/campaign.jpg',
       verificationRequired: true,
       deadline: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      verifierPubKey: VERIFIER_KEY, // explicitly pass verifier key
+      beneficiaryAddress: 'beneficiary-test-addr',
     }, CREATOR_KEY);
 
     const campaignId = createRes.campaign.id;
     console.log(`   ✓ Campaign created: ${campaignId}`);
-    console.log(`   State: ${createRes.campaign.state}`);
-    console.log(`   Target: ${createRes.campaign.targetAmount} lovelace`);
+    console.log(`   Initial State: ${createRes.campaign.state}`);
 
-    // Step 2: Contribute Funds (Backend: POST /campaigns/{id}/contribute)
+    // Step 2: Contribute Funds
     console.log('\n2️⃣  Contributor funds campaign...');
-    let contributionCount = 0;
     for (let i = 0; i < 5; i++) {
-      const contributeRes = await post(`/campaigns/${campaignId}/contribute`, {
+      const cRes = await post(`/campaigns/${campaignId}/contribute`, {
         amount: TEST_CONFIG.contributionAmount,
         contributorAddress: `contributor-${i}`,
       }, CONTRIBUTOR_KEY);
-      contributionCount++;
-      console.log(`   ✓ Contribution ${i + 1}: ${TEST_CONFIG.contributionAmount} lovelace`);
-      console.log(`   Collected: ${contributeRes.campaign.collectedAmount}/${contributeRes.campaign.targetAmount}`);
+      console.log(`   ✓ Contribution ${i + 1}: ${TEST_CONFIG.contributionAmount} lovelace — Collected: ${cRes.campaign.collectedAmount}`);
     }
 
-    // Step 3: Lock Funds (Backend: POST /campaigns/{id}/lock)
+    // Confirm on backend that collectedAmount reached target
+    const detail1 = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+    console.log(`   ✔ Backend collectedAmount: ${detail1.campaign.collectedAmount} / ${detail1.campaign.targetAmount}`);
+
+    // Step 3: Lock Funds
     console.log('\n3️⃣  Creator locks funds (fundraising complete)...');
     const lockRes = await post(`/campaigns/${campaignId}/lock`, {}, CREATOR_KEY);
-    console.log(`   ✓ Funds locked`);
-    console.log(`   State: ${lockRes.campaign.state}`);
-    console.log(`   Total Collected: ${lockRes.campaign.collectedAmount} lovelace`);
+    console.log(`   ✓ Funds locked — State: ${lockRes.campaign.state}`);
 
-    // Step 4: Submit Verification (Backend: POST /campaigns/{id}/verify)
-    console.log('\n4️⃣  Creator submits verification proof...');
-    const verifyRes = await post(`/campaigns/${campaignId}/verify`, {
-      proofHash: 'ipfs://QmTestProof' + Date.now(),
+    // Poll backend to confirm on-chain state reflection
+    const afterLock = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+    if (afterLock.campaign.state !== 'Locked') throw new Error('Lock not reflected in backend');
+    
+    // Assert on-chain lock tx present (optional)
+    if (process.env.ASSERT_ONCHAIN !== 'false') {
+      if (!afterLock.campaign.onchain || !afterLock.campaign.onchain.lockTx) {
+        throw new Error('Missing on-chain lockTx after locking funds');
+      }
+      console.log(`   ✓ Lock tx recorded: ${afterLock.campaign.onchain.lockTx}`);
+    }
+
+    // Step 4: Submit Evidence (IPFS CID)
+    console.log('\n4️⃣  Creator submits evidence (CID) to backend...');
+    const fakeCid = `ipfs://QmTestProof${Date.now()}`;
+    const submitRes = await post(`/campaigns/${campaignId}/verify`, {
+      proofHash: fakeCid,
       description: 'Proof of funds usage documentation',
     }, CREATOR_KEY);
-    console.log(`   ✓ Verification submitted`);
-    console.log(`   State: ${verifyRes.campaign.state}`);
-    console.log(`   Proof Hash: ${verifyRes.campaign.proofHash}`);
+    console.log(`   ✓ Evidence submitted — CID: ${submitRes.campaign.proofHash}`);
 
-    // Step 5: Admin Approves Verification (Backend: POST /campaigns/{id}/approve-verification)
-    console.log('\n5️⃣  Admin auditor approves verification...');
+    // Ensure backend stored CID
+    const afterEvidence = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+    if (afterEvidence.campaign.proofHash !== fakeCid) throw new Error('CID not stored');
+
+    // Step 5: Verifier approves verification
+    console.log('\n5️⃣  Verifier reviews evidence and approves...');
     const approveRes = await post(`/campaigns/${campaignId}/approve-verification`, {
       auditNotes: 'Documentation verified and approved',
-      nftMetadata: {
-        campaignName: createRes.campaign.title,
-        verificationDate: new Date().toISOString(),
-      },
-    }, ADMIN_KEY);
-    console.log(`   ✓ Verification approved`);
-    console.log(`   State: ${approveRes.campaign.state}`);
-    console.log(`   NFT Minted: ${approveRes.campaign.nftMinted}`);
+    }, VERIFIER_KEY);
+    console.log(`   ✓ Verification approved — State: ${approveRes.campaign.state}`);
 
-    // Step 6: Disburse Funds (Backend: POST /campaigns/{id}/disburse)
-    console.log('\n6️⃣  Funds disbursed to beneficiary...');
+    // Expect the campaign to be Verified and NFT minted flag possibly set after admin mint
+    const afterApprove = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+    if (afterApprove.campaign.state !== 'Verified') throw new Error('Approval did not set Verified state');
+    // Assert on-chain approval tx present (optional)
+    if (process.env.ASSERT_ONCHAIN !== 'false') {
+      if (!afterApprove.campaign.onchain || !afterApprove.campaign.onchain.approvalTx) {
+        throw new Error('Missing on-chain approvalTx after verification');
+      }
+    }
+
+    // Step 6: Admin mints NFT (if backend triggers separately)
+    console.log('\n6️⃣  Admin mints NFT (if not auto-minted)...');
+    if (!afterApprove.campaign.nftMinted) {
+      const mintRes = await post(`/campaigns/${campaignId}/mint-nft`, {
+        metadata: {
+          campaignName: afterApprove.campaign.title,
+          verificationDate: new Date().toISOString(),
+        }
+      }, ADMIN_KEY);
+      console.log(`   ✓ NFT mint triggered — nftMinted: ${mintRes.campaign.nftMinted}`);
+    } else {
+      console.log('   ℹ NFT already minted by approval workflow');
+    }
+
+    // Step 7: Disburse funds
+    console.log('\n7️⃣  Creator disburses funds to beneficiary...');
     const disburseRes = await post(`/campaigns/${campaignId}/disburse`, {
-      transactionHash: `tx_${Date.now()}`,
+      transactionNote: 'Disbursing verified funds',
     }, CREATOR_KEY);
-    console.log(`   ✓ Funds disbursed`);
-    console.log(`   State: ${disburseRes.campaign.state}`);
-    console.log(`   Transaction: ${disburseRes.campaign.onChainTxHash}`);
+    console.log(`   ✓ Disburse triggered — State: ${disburseRes.campaign.state}`);
 
-    // Step 7: Confirm Receipt (Backend: POST /campaigns/{id}/confirm-receipt)
-    console.log('\n7️⃣  Beneficiary confirms receipt...');
+    // Confirm on-chain/ backend reflection
+    const afterDisburse = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+    if (afterDisburse.campaign.state !== 'Disbursed') throw new Error('Disburse not reflected in backend');
+    // Assert on-chain disburse tx present (optional)
+    if (process.env.ASSERT_ONCHAIN !== 'false') {
+      if (!afterDisburse.campaign.onchain || !afterDisburse.campaign.onchain.disburseTx) {
+        throw new Error('Missing on-chain disburseTx after disbursement');
+      }
+      // Also assert nftMintTx was recorded if minted during approval
+      if (!afterDisburse.campaign.onchain.nftMintTx) {
+        console.warn('   ⚠ Warning: nftMintTx not recorded; NFT may not have been minted');
+      }
+    }
+
+    // Step 8: Beneficiary confirms receipt
+    console.log('\n8️⃣  Beneficiary confirms receipt...');
     const confirmRes = await post(`/campaigns/${campaignId}/confirm-receipt`, {
       beneficiaryStatement: 'Funds received and being utilized as planned',
-    }, CREATOR_KEY);
-    console.log(`   ✓ Receipt confirmed`);
-    console.log(`   State: ${confirmRes.campaign.state}`);
+    }, CREATOR_KEY); // beneficiary may use their own key; using creator key in test
+    console.log(`   ✓ Receipt confirmed — State: ${confirmRes.campaign.state}`);
 
     console.log('\n✅ Test 1 PASSED: Full campaign lifecycle completed\n');
     return { success: true, campaignId };
@@ -163,6 +207,15 @@ async function testCampaignRefund() {
     console.log(`   ✓ Refund processed`);
     console.log(`   State: ${refundRes.campaign.state}`);
 
+    // Assert on-chain refund tx present (optional)
+    if (process.env.ASSERT_ONCHAIN !== 'false') {
+      const afterRefund = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+      if (!afterRefund.campaign.onchain || !afterRefund.campaign.onchain.refundTx) {
+        throw new Error('Missing on-chain refundTx after refund');
+      }
+      console.log(`   ✓ Refund tx recorded: ${afterRefund.campaign.onchain.refundTx}`);
+    }
+
     console.log('\n✅ Test 2 PASSED: Campaign refund successful\n');
     return { success: true, campaignId };
 
@@ -212,6 +265,14 @@ async function testConcurrentContributions() {
     const finalRes = results[results.length - 1];
     console.log(`   ✓ All contributions processed`);
     console.log(`   Total Collected: ${finalRes.campaign.collectedAmount} lovelace`);
+
+    // Assert lastContribute timestamp (optional)
+    if (process.env.ASSERT_ONCHAIN !== 'false') {
+      const final = await get(`/campaigns/${campaignId}`, CREATOR_KEY);
+      if (final.campaign.lastContributeAt) {
+        console.log(`   ✓ Last contribution recorded at: ${final.campaign.lastContributeAt}`);
+      }
+    }
 
     console.log('\n✅ Test 3 PASSED: Concurrent contributions handled\n');
     return { success: true, campaignId };
@@ -317,19 +378,48 @@ async function post(endpoint, body, authKey = ADMIN_KEY) {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(`${res.status}: ${data.error || 'Request failed'}`);
+        throw new Error(`${res.status}: ${data.error || JSON.stringify(data)}`);
       }
 
       return data;
     } catch (error) {
       lastError = error;
       if (attempt < TEST_CONFIG.maxRetries) {
-        console.log(`   ⏳ Retry attempt ${attempt}/${TEST_CONFIG.maxRetries}...`);
+        console.log(`   ⏳ Retry attempt ${attempt}/${TEST_CONFIG.maxRetries} for ${endpoint}...`);
         await sleep(TEST_CONFIG.retryDelay);
+      } else {
+        console.error(`   [DEBUG] Final error for ${endpoint}:`, lastError?.message || lastError);
       }
     }
   }
 
+  throw lastError;
+}
+
+/**
+ * Helper: HTTP GET with retries
+ */
+async function get(endpoint, authKey = ADMIN_KEY) {
+  let lastError;
+  for (let attempt = 1; attempt <= TEST_CONFIG.maxRetries; attempt++) {
+    try {
+      const res = await fetch(API_URL + endpoint, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${authKey}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(`${res.status}: ${data.error || JSON.stringify(data)}`);
+      return data;
+    } catch (error) {
+      lastError = error;
+      if (attempt < TEST_CONFIG.maxRetries) {
+        console.log(`   ⏳ Retry attempt ${attempt}/${TEST_CONFIG.maxRetries} for GET ${endpoint}...`);
+        await sleep(TEST_CONFIG.retryDelay);
+      }
+    }
+  }
   throw lastError;
 }
 
@@ -387,14 +477,15 @@ async function runAllTests() {
 }
 
 // Execute if run directly
-if (require.main === module) {
+if (process.argv[1] === __filename) {
   runAllTests().catch(error => {
     console.error('Test runner failed:', error);
     process.exit(1);
   });
 }
 
-module.exports = {
+// Export updated functions (ES module)
+export {
   testFullCampaignLifecycle,
   testCampaignRefund,
   testConcurrentContributions,
