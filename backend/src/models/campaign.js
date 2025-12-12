@@ -22,11 +22,12 @@ class Campaign {
 
   static async findById(id) {
     const c = db.campaigns.find(x => x.id === id);
-    // Return a cloned object so callers can modify and then call save()
-    return c ? Object.assign({}, c) : null;
+    // Return a Campaign instance so callers have access to instance methods like save()
+    return c ? new Campaign(Object.assign({}, c)) : null;
   }
 
   static async findAll() {
+    // Return shallow clones to avoid accidental mutation of the DB array
     return db.campaigns.map(c => Object.assign({}, c));
   }
 }

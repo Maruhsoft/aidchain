@@ -6,6 +6,8 @@
  */
 
 const authMiddleware = (req, res, next) => {
+  console.log(`[AUTH MIDDLEWARE] Received ${req.method} ${req.path}`);
+  
   try {
     const authHeader = req.get('Authorization');
     console.log(`[AUTH] ${req.method} ${req.path} - Auth header: ${authHeader ? 'present' : 'missing'}`);

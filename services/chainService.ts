@@ -138,7 +138,7 @@ export class ChainService {
       });
       
       this.persistMockData();
-      return { success: true };
+      return { success: true, campaign: { ...newCampaign } };
     }
     const res = await fetch(`${API_URL}/api/campaigns`, {
       method: 'POST',
@@ -168,13 +168,14 @@ export class ChainService {
           blockHeight: 9234000
         });
         this.persistMockData();
+        return { success: true, campaign: { ...campaign } };
       }
-      return { success: true };
+      return { success: false, error: 'Campaign not found' };
     }
-    const res = await fetch(`${API_URL}/api/donate`, {
+    const res = await fetch(`${API_URL}/api/campaigns/${campaignId}/contribute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId, amount })
+      body: JSON.stringify({ amount })
     });
     return res.json();
   }
@@ -197,13 +198,14 @@ export class ChainService {
           blockHeight: 9234000
         });
         this.persistMockData();
+        return { success: true, campaign: { ...campaign } };
       }
-      return { success: true };
+      return { success: false, error: 'Campaign not found' };
     }
-    const res = await fetch(`${API_URL}/api/proof`, {
+    const res = await fetch(`${API_URL}/api/campaigns/${campaignId}/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId, proof })
+      body: JSON.stringify({ proofHash: proof })
     });
     return res.json();
   }
@@ -215,8 +217,6 @@ export class ChainService {
       if (campaign && campaign.status === CampaignStatus.VERIFICATION_PENDING) {
         campaign.status = CampaignStatus.DISBURSED;
         campaign.nftBadgeMinted = true;
-        // Mock that the campaign is now available to beneficiaries
-        // In a real scenario, this would be determined by the SC state or off-chain database
         if (!campaign.beneficiaryIds) campaign.beneficiaryIds = [];
         campaign.beneficiaryIds.push('addr_ben...9x');
 
@@ -241,13 +241,14 @@ export class ChainService {
           blockHeight: 9234000
         });
         this.persistMockData();
+        return { success: true, campaign: { ...campaign } };
       }
-      return { success: true };
+      return { success: false, error: 'Campaign not in valid state for verification' };
     }
-    const res = await fetch(`${API_URL}/api/verify`, {
+    const res = await fetch(`${API_URL}/api/campaigns/${campaignId}/approve-verification`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
+      body: JSON.stringify({ auditNotes: 'Verified' })
     });
     return res.json();
   }
@@ -269,13 +270,14 @@ export class ChainService {
           blockHeight: 9234000
         });
         this.persistMockData();
+        return { success: true, campaign: { ...campaign } };
       }
-      return { success: true };
+      return { success: false, error: 'Campaign not found' };
     }
-    const res = await fetch(`${API_URL}/api/confirm`, {
+    const res = await fetch(`${API_URL}/api/campaigns/${campaignId}/confirm-receipt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
+      body: JSON.stringify({ beneficiaryStatement: 'Received' })
     });
     return res.json();
   }

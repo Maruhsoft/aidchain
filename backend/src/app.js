@@ -12,7 +12,14 @@ const app = express();
 app.use(helmet());
 app.use(express.json());
 app.use(cors());
-app.use(authMiddleware); // Apply auth middleware to all routes
+
+// Test endpoint BEFORE middleware to see if server responds at all
+app.get('/test', (req, res) => {
+  console.log('[TEST] GET /test was called');
+  res.json({ status: 'test ok' });
+});
+
+app.use(authMiddleware); // Apply auth middleware to all routes after test endpoint
 
 // Mount the modular routes
 app.use('/api', campaignRoutes);

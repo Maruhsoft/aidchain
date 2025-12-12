@@ -115,8 +115,18 @@ export const App = () => {
   const wrapAction = async (actionFn: () => Promise<any>, loadingMsg: string, successMsg: string, failMsg: string) => {
     const loadId = addToast(loadingMsg, 'loading');
     try {
-      await actionFn();
-      await loadData();
+      const result = await actionFn();
+      
+      // If the result includes updated campaign data, update state directly
+      if (result && result.campaign) {
+        setCampaigns(prevCampaigns => 
+          prevCampaigns.map(c => c.id === result.campaign.id ? result.campaign : c)
+        );
+      } else {
+        // Otherwise reload all data
+        await loadData();
+      }
+      
       removeToast(loadId);
       addToast(successMsg, 'success');
       return true;
@@ -130,19 +140,31 @@ export const App = () => {
   const chainActions = {
     campaigns,
     transactions,
-    donate: (id: string, amt: number) => wrapAction(() => chainService.donate(id, amt), 'Processing transaction...', `Successfully donated ₳${amt}!`, 'Transaction failed'),
+    donate: (id: string, amt: number) => {
+      if (!wallet.isConnected) return Promise.reject('Not connected');
+      return wrapAction(() => chainService.donate(id, amt), 'Processing transaction...', `Successfully donated ₳${amt}!`, 'Transaction failed');
+    },
     submitProof: (id: string, proof: string) => wrapAction(() => chainService.submitProof(id, proof), 'Submitting proof...', 'Proof submitted for verification', 'Submission failed'),
     verifyAndDisburse: (id: string) => wrapAction(() => chainService.verify(id), 'Verifying & Releasing funds...', 'Funds released & NFT Minted', 'Verification failed'),
     confirmReceipt: (id: string) => wrapAction(() => chainService.confirm(id), 'Confirming receipt...', 'Receipt confirmed. Campaign Completed!', 'Confirmation failed'),
     createCampaign: (data: any) => {
       return wrapAction(() => chainService.createCampaign(data), 'Creating campaign...', 'Campaign created successfully', 'Creation failed').then(success => {
-        if (success) setIsCreateModalOpen(false);
+        if (success) {
+          setIsCreateModalOpen(false);
+          // Reload campaigns after creation to ensure we have the latest list
+          loadData();
+        }
         return success;
       });
     },
     addAudit: async (id: string, score: number, report: string) => {
       await chainService.addAudit(id, score, report);
-      await loadData();
+      // Update the campaign in state with audit info
+      setCampaigns(prevCampaigns =>
+        prevCampaigns.map(c => 
+          c.id === id ? { ...c, trustScore: score, auditReport: report } : c
+        )
+      );
       addToast('AI Audit Report Generated', 'info');
     }
   };
